@@ -3,7 +3,6 @@
 
 #include <cstddef>
 #include <cstring>
-#include <emmintrin.h>
 #include <iostream>
 #include <utility>
 #include <functional>
@@ -73,9 +72,13 @@ inline void VoidInvokeNoOpt(Func&& func, Args&&... args) {
 } // namespace detail
 
 class BenchStats {
+  public:
+    constexpr static size_t kTreshholdMultiplier = 10;
   // private:
   public:
     size_t elem_per_call_;
+    // size_t n_stable_calls_;
+    // size_t n_unstable_calls_;
     // clock per call = latency
     double mean_clock_per_call_;
     double variance_clock_per_call_;
@@ -86,6 +89,8 @@ class BenchStats {
     explicit BenchStats(size_t elem_per_call = 1) 
         :
         elem_per_call_{elem_per_call},
+        // n_stable_calls_{0},
+        // n_unstable_calls_{0},
         mean_clock_per_call_{0}, 
         variance_clock_per_call_{0}, 
         max_clock_per_call_{std::numeric_limits<size_t>::min()}, 
@@ -113,38 +118,39 @@ class BenchStats {
 };
 
 class Bencher {
-  private:    
+  private:
+    static constexpr size_t kZeroFuncCallLat = 84;
+
     size_t elem_per_call_;
     size_t num_iters_;
     size_t num_warmups_;
   public:
-    explicit Bencher(size_t num_iters = 1, size_t num_warmups = 0, size_t elem_per_call = 1, bool fix_core = true) 
+    explicit Bencher(size_t num_iters = 1, size_t num_warmups = 0, size_t elem_per_call = 1) 
         : 
         elem_per_call_{elem_per_call},
         num_iters_{num_iters}, 
         num_warmups_{num_warmups}
-    {
-        if (!fix_core) { return ; }
-
+    {}
+ 
+    void BindToCore(int core_ind) {
         cpu_set_t cpu_set;
         CPU_ZERO(&cpu_set);
-        CPU_SET(0, &cpu_set);
-
         // 0 means current thread
-        auto res = sched_setaffinity(3, sizeof(cpu_set), &cpu_set); 
+        CPU_SET(0, &cpu_set);
+        auto res = sched_setaffinity(core_ind, sizeof(cpu_set), &cpu_set); 
         if (res != 0) {
             throw std::runtime_error("Cant bind to core: " + std::string{std::strerror(errno)});
-        }
+        }       
+    }
 
-        if (geteuid() == 0) {
-            errno = 0;
-            res = nice(-20);
-            if (res != 0 && errno != 0) {
-                throw std::runtime_error("Cant set priority: " + std::string{std::strerror(errno)});
-            }
+    void UpPriority() {           
+        errno = 0;
+        auto res = nice(-20);
+        if (res != 0 && errno != 0) {
+            throw std::runtime_error("Cant set priority: " + std::string{std::strerror(errno)});
         }
     }
-    
+
     template <typename Func, typename... Args>
     BenchStats Run(Func&& func, Args&&... args) {
         BenchStats stats{elem_per_call_};
@@ -164,7 +170,7 @@ class Bencher {
             _mm_lfence();
             size_t end = __rdtsc(); 
 
-            size_t latency = end - start;
+            size_t latency = end - start - kZeroFuncCallLat;
             UpdateMeasures(&stats, latency, i);
         }
 
